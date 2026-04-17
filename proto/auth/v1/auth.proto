@@ -9,12 +9,16 @@ option go_package = "github.com/ontheblock/infra/proto/auth/v1;authv1";
 import "google/protobuf/timestamp.proto";
 
 // AuthService exposes internal gRPC endpoints consumed by Gateway and other services.
-// REST endpoints (POST /auth/google, POST /auth/refresh, etc.) are handled by
+// REST endpoints (POST /auth/google, POST /auth/admin, POST /auth/refresh, etc.) are handled by
 // Gateway which translates HTTP -> gRPC calls to this service.
 service AuthService {
   // GoogleLogin verifies a Google ID Token, finds or creates the user,
   // and returns a token pair. Called by Gateway for POST /auth/google.
   rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
+
+  // AdminLogin authenticates an admin user with username and password,
+  // and returns a token pair. Called by Gateway for POST /auth/admin.
+  rpc AdminLogin(AdminLoginRequest) returns (AuthTokenResponse);
 
   // RefreshToken rotates the refresh token and returns a new token pair.
   // Called by Gateway for POST /auth/refresh.
@@ -46,6 +50,13 @@ message GoogleLoginResponse {
   google.protobuf.Timestamp refresh_token_expires_at = 4;
   UserResponse user = 5;
   bool is_new_user = 6; // true if the user was created during this login
+}
+
+// --- AdminLogin ---
+
+message AdminLoginRequest {
+  string username = 1;
+  string password = 2;
 }
 
 // --- RefreshToken ---
