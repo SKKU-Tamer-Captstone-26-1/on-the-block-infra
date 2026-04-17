@@ -1,10 +1,7 @@
-# gRPC 기반 MSA 인증 서비스 구축 가이드
+# gRPC 기반 인증 서비스 구현 가이드 (On the Block)
 
-> 기존 seniorvibe-server의 로그인/인증 로직을 그대로 가져와 **독립적인 gRPC 마이크로서비스**로 분리하는 가이드입니다.
-> auth-service는 REST 엔드포인트를 일절 노출하지 않으며, 모든 통신은 gRPC(포트 9090)로만 이루어집니다.
-> - Flutter 앱/웹 → gRPC-Web → API Gateway → gRPC → auth-service
-> - Admin 웹 → REST → API Gateway → gRPC → auth-service
-> - 타 마이크로서비스 → gRPC → auth-service (토큰 검증)
+> auth-service는 REST 엔드포인트를 노출하지 않습니다. 모든 통신은 gRPC(포트 9090)로만 이루어집니다.
+> Gateway가 HTTP -> gRPC 변환을 담당합니다.
 
 ---
 
@@ -14,49 +11,59 @@
 2. [프로젝트 셋업](#2-프로젝트-셋업)
 3. [Proto 파일 정의](#3-proto-파일-정의)
 4. [내부 구조 및 파일 목록](#4-내부-구조-및-파일-목록)
-5. [gRPC 서비스 구현](#5-grpc-서비스-구현)
-6. [JWT 토큰 로직](#6-jwt-토큰-로직)
+5. [gRPC 서비스 구현 골격](#5-grpc-서비스-구현-골격)
+6. [Google 소셜 로그인 내부 로직](#6-google-소셜-로그인-내부-로직)
 7. [어드민 로그인 내부 로직](#7-어드민-로그인-내부-로직)
-8. [카카오 OAuth2 네이티브 앱 내부 로직](#8-카카오-oauth2-네이티브-앱-내부-로직)
-9. [토큰 검증 흐름 (타 서비스 연동)](#9-토큰-검증-흐름-타-서비스-연동)
-10. [유저 엔티티 및 권한](#10-유저-엔티티-및-권한)
-11. [환경 설정](#11-환경-설정)
+8. [관리형 계정 생성 (ROLE_BAR / ROLE_REQUE)](#8-관리형-계정-생성-role_bar--role_reque)
+9. [JWT 토큰 로직 (RS256)](#9-jwt-토큰-로직-rs256)
+10. [토큰 갱신 흐름](#10-토큰-갱신-흐름)
+11. [토큰 검증 흐름 (Zero Trust)](#11-토큰-검증-흐름-zero-trust)
+12. [유저 엔티티 및 권한](#12-유저-엔티티-및-권한)
+13. [환경 설정](#13-환경-설정)
 
 ---
 
 ## 1. 전체 MSA 구조 개요
 
-```mermaid
-flowchart TD
-    A["Flutter 앱 / 웹\n(gRPC-Web)"]
-    B["Admin 웹\n(REST/HTTP)"]
-    C["타 마이크로서비스\n(gRPC 클라이언트)"]
+```
+React / Flutter
+      |
+      | REST / gRPC-Web
+      v
+  [Gateway]  -- JWT 1차 검증 (서명 + 만료, Public Key)
+      |         HTTP -> gRPC 변환, 라우팅
+      | gRPC
+      v
+ [auth-service]  포트 9090
+      |
+      +-- PostgreSQL (auth 스키마)
+      +-- Redis (리프레시 토큰 캐시)
 
-    GW["API Gateway\n─────────────────\ngRPC-Web → gRPC 변환\nREST → gRPC 변환 (Admin)\n라우팅 / 인증 토큰 포워딩"]
-
-    AUTH["auth-service\n─────────────────\ngRPC 포트: 9090  |  HTTP: 없음\n\nAdminLogin RPC       어드민 ID/PW → JWT 발급\nKakaoNativeLogin RPC  카카오 토큰 검증 → JWT 발급\nValidateToken RPC     JWT 검증 → 유저 정보 반환"]
-
-    DB[("DB\n(users)")]
-
-    A -- gRPC-Web --> GW
-    B -- REST/HTTP --> GW
-    GW -- gRPC --> AUTH
-    C -- gRPC --> AUTH
-    AUTH -- JPA --> DB
+타 마이크로서비스 (Community / Recommend)
+      |
+      | gRPC (ValidateToken 직접 호출, Zero Trust 2차 검증)
+      v
+ [auth-service]
 ```
 
-> 세션 방식: STATELESS (서버 세션 없음, JWT만 사용)
+### JWT 검증 2단계
 
-### 클라이언트별 통신 경로
+| 단계 | 위치 | 검증 내용 |
+|------|------|---------|
+| 1차 | Gateway | Public Key로 서명 검증 + 만료 확인 |
+| 2차 | 각 서비스 | ValidateToken gRPC 호출 -> claims(userId, role) 확인 |
 
-| 클라이언트 | 프로토콜 | 경로 |
-|-----------|---------|------|
-| Flutter 앱 (모바일) | gRPC-Web | 앱 → API Gateway → auth-service |
-| Flutter 웹 | gRPC-Web | 웹 → API Gateway → auth-service |
-| Admin 웹 | REST/HTTP | 웹 → API Gateway(REST→gRPC 변환) → auth-service |
-| 타 마이크로서비스 | gRPC | 서비스 → auth-service 직접 |
+### 엔드포인트 요약
 
-> **auth-service 자체에는 REST 레이어가 없습니다.** Spring MVC, `@RestController`, HTTP 필터체인 모두 없는 형태를 지향
+| HTTP (Gateway) | gRPC RPC | JWT 필요 | 설명 |
+|----------------|----------|---------|------|
+| POST /auth/google | GoogleLogin | 불필요 | Google ID Token -> 앱 JWT 발급 |
+| POST /auth/admin | AdminLogin | 불필요 | username/password -> JWT 발급 |
+| POST /auth/refresh | RefreshToken | 불필요 | 리프레시 토큰 로테이션 |
+| GET /auth/me | GetMe | 필요 | 현재 유저 정보 조회 |
+| POST /auth/logout | Logout | 필요 | 리프레시 토큰 전체 폐기 |
+| POST /auth/admin/users | AdminCreateUser | 필요 (ROLE_ADMIN) | BAR/REQUE 계정 생성 |
+| 내부 gRPC 전용 | ValidateToken | - | 타 서비스 Zero Trust 검증 |
 
 ---
 
@@ -72,21 +79,28 @@ plugins {
 }
 
 dependencies {
-    // gRPC + Protobuf
+    // gRPC
     implementation 'net.devh:grpc-server-spring-boot-starter:3.x.x'
     implementation 'io.grpc:grpc-protobuf:1.x.x'
     implementation 'io.grpc:grpc-stub:1.x.x'
     implementation 'com.google.protobuf:protobuf-java:3.x.x'
 
-    //기초 의존성
+    // JWT (RS256)
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.x'
+    runtimeOnly   'io.jsonwebtoken:jjwt-impl:0.12.x'
+    runtimeOnly   'io.jsonwebtoken:jjwt-jackson:0.12.x'
+
+    // Google ID Token 검증
+    implementation 'com.google.auth:google-auth-library-oauth2-http:1.x.x'
+
+    // DB / Cache
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-    implementation 'org.springframework.boot:spring-boot-starter-security'
-    implementation 'io.jsonwebtoken:jjwt-api:0.11.x'
-    runtimeOnly   'io.jsonwebtoken:jjwt-impl:0.11.x'
-    runtimeOnly   'io.jsonwebtoken:jjwt-jackson:0.11.x'
-    implementation 'org.springframework.cloud:spring-cloud-starter-openfeign'
+    implementation 'org.springframework.boot:spring-boot-starter-data-redis'
+    runtimeOnly   'org.postgresql:postgresql'
+
+    // 보안 (BCrypt)
+    implementation 'org.springframework.security:spring-security-crypto'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
-    runtimeOnly   'com.mysql:mysql-connector-j'
 }
 
 protobuf {
@@ -98,15 +112,9 @@ protobuf {
         all()*.plugins { grpc {} }
     }
 }
-
-sourceSets {
-    main {
-        proto { srcDirs 'src/main/proto' }
-    }
-}
 ```
 
-### application.yml (gRPC 서버 설정 추가)
+### application.yml
 
 ```yaml
 grpc:
@@ -115,108 +123,178 @@ grpc:
 
 spring:
   datasource:
-    url: jdbc:mysql://...
+    url: jdbc:postgresql://${DB_HOST}:5432/${DB_NAME}?currentSchema=auth
+    username: ${DB_USER}
+    password: ${DB_PASSWORD}
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: 6379
   jpa:
     hibernate:
       ddl-auto: validate
 
 jwt:
-  secret-key: ${JWT_SECRET_KEY}
-  access-token-expiration: 12000   # 분
-  refresh-token-expiration: 20160  # 분
+  private-key: ${JWT_PRIVATE_KEY}   # RS256 PEM 개인키 (auth-service 전용)
+  public-key: ${JWT_PUBLIC_KEY}     # RS256 PEM 공개키 (Gateway, 타 서비스에도 배포)
+  access-token-expiration: 30       # 분 (운영: 15~30분)
+  refresh-token-expiration: 10080   # 분 (7일)
 
-kakao:
-  api:
-    user-info-url: https://kapi.kakao.com/v2/user/me
+google:
+  client-id: ${GOOGLE_CLIENT_ID}    # ID Token aud 검증에 사용
 ```
 
 ---
 
 ## 3. Proto 파일 정의
 
-**파일**: `src/main/proto/auth_service.proto`
+실제 파일 위치: `proto/auth/v1/auth.proto` (infra 레포 단일 출처)
 
 ```protobuf
 syntax = "proto3";
 
-package auth;
+package ontheblock.auth.v1;
 
-option java_package = "com.yourcompany.auth.grpc";
-option java_outer_classname = "AuthServiceProto";
+option java_package = "com.ontheblock.auth.v1";
 option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/auth/v1;authv1";
 
+import "google/protobuf/timestamp.proto";
+
+// AuthService exposes internal gRPC endpoints consumed by Gateway and other services.
+// REST endpoints (POST /auth/google, POST /auth/admin, POST /auth/refresh, etc.) are handled by
+// Gateway which translates HTTP -> gRPC calls to this service.
 service AuthService {
-  // 어드민 로그인 (ID/PW)
-  rpc AdminLogin(AdminLoginRequest) returns (LoginResponse);
+  // GoogleLogin verifies a Google ID Token, finds or creates the user,
+  // and returns a token pair. Called by Gateway for POST /auth/google.
+  rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
 
-  // 카카오 OAuth2 네이티브 앱 로그인
-  rpc KakaoNativeLogin(KakaoNativeLoginRequest) returns (KakaoLoginResponse);
+  // AdminLogin authenticates an admin user with username and password,
+  // and returns a token pair. Called by Gateway for POST /auth/admin.
+  rpc AdminLogin(AdminLoginRequest) returns (AuthTokenResponse);
 
-  // JWT 토큰 검증 (타 서비스가 호출)
+  // AdminCreateUser creates a managed user account (ROLE_BAR or ROLE_REQUE).
+  // Only callable by ROLE_ADMIN. Called by Gateway for POST /auth/admin/users (JWT required).
+  rpc AdminCreateUser(AdminCreateUserRequest) returns (AdminCreateUserResponse);
+
+  // RefreshToken rotates the refresh token and returns a new token pair.
+  // Called by Gateway for POST /auth/refresh.
+  rpc RefreshToken(RefreshTokenRequest) returns (AuthTokenResponse);
+
+  // GetMe returns the authenticated user's profile.
+  // Called by Gateway for GET /auth/me (JWT required).
+  rpc GetMe(GetMeRequest) returns (UserResponse);
+
+  // Logout revokes all refresh tokens for the user.
+  // Called by Gateway for POST /auth/logout (JWT required).
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // ValidateToken validates a JWT and returns the claims.
+  // Called by other services for Zero Trust secondary validation.
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
 }
 
-// ── 어드민 로그인 ──────────────────────────────────
+// --- GoogleLogin ---
+
+message GoogleLoginRequest {
+  string id_token = 1; // Google ID Token from client
+}
+
+message GoogleLoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
+  bool is_new_user = 6; // true if the user was created during this login
+}
+
+// --- AdminLogin ---
 
 message AdminLoginRequest {
-  string user_name = 1;
-  string password  = 2;
+  string username = 1;
+  string password = 2;
 }
 
-message LoginResponse {
-  int64  id            = 1;
-  string username      = 2;
-  string name          = 3;
-  string access_token  = 4;
-  string refresh_token = 5;
-  string role          = 6;
+// --- AdminCreateUser ---
+
+message AdminCreateUserRequest {
+  string username = 1;
+  string password = 2;
+  Role role = 3; // must be ROLE_BAR or ROLE_REQUE; ROLE_ADMIN rejected by service layer
 }
 
-// ── 카카오 네이티브 로그인 ─────────────────────────
-
-message KakaoNativeLoginRequest {
-  string provider      = 1;   // "kakao"
-  string access_token  = 2;   // 카카오 SDK 토큰
-  KakaoUserInfo user_info = 3; // 선택
+message AdminCreateUserResponse {
+  UserResponse user = 1;
 }
 
-message KakaoUserInfo {
-  string id           = 1;
-  string email        = 2;
-  string name         = 3;
-  string phone_number = 4;
-  string gender       = 5;
-  string birth_date   = 6;
+// --- RefreshToken ---
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
 }
 
-message KakaoLoginResponse {
-  string access_token  = 1;
-  string refresh_token = 2;
-  KakaoLoginUserInfo user_info = 3;
-  bool   is_new_user   = 4;
+// --- GetMe ---
+
+message GetMeRequest {
+  string user_id = 1;
 }
 
-message KakaoLoginUserInfo {
-  int64  id          = 1;
-  string email       = 2;
-  string name        = 3;
-  string gender      = 4;
-  string birth_date  = 5;
-  string social_type = 6;
-  string role        = 7;
+// --- Logout ---
+
+message LogoutRequest {
+  string user_id = 1;
 }
 
-// ── 토큰 검증 ──────────────────────────────────────
+message LogoutResponse {}
+
+// --- ValidateToken ---
 
 message ValidateTokenRequest {
-  string token = 1;
+  string access_token = 1;
 }
 
 message ValidateTokenResponse {
-  bool   valid    = 1;
-  string user_id  = 2;   // JWT subject (socialId 또는 username)
-  string role     = 3;
-  string reason   = 4;   // 실패 시 사유
+  bool valid = 1;
+  string user_id = 2;
+  string email = 3;
+  Role role = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string reason = 6; // failure reason: TOKEN_EXPIRED, TOKEN_INVALID, etc.
+}
+
+// --- Shared types ---
+
+// AuthTokenResponse is used for token operations that do not involve a new social login
+// (e.g. RefreshToken). For GoogleLogin use GoogleLoginResponse which includes is_new_user.
+message AuthTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
+}
+
+message UserResponse {
+  string user_id = 1;
+  string email = 2;
+  string nickname = 3;
+  string profile_image_url = 4;
+  Role role = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_NORMAL = 1;   // 구글 소셜 로그인 유저
+  ROLE_ADMIN = 2;    // 슈퍼 어드민 (username/password)
+  ROLE_BAR = 3;      // 바/업장 관리자 (어드민이 생성)
+  ROLE_REQUE = 4;    // 리케 (어드민이 생성)
+}
+
+enum Provider {
+  PROVIDER_UNSPECIFIED = 0;
+  PROVIDER_GOOGLE = 1;
 }
 ```
 
@@ -224,189 +302,147 @@ message ValidateTokenResponse {
 
 ## 4. 내부 구조 및 파일 목록
 
-기존 seniorvibe-server 내부 로직을 그대로 가져오되, **Controller 레이어를 gRPC Service로 교체**합니다.
-
-### gRPC 레이어 (신규)
+### gRPC 레이어
 
 | 파일 | 역할 |
 |------|------|
-| `grpc/AuthGrpcService.java` | `AuthServiceGrpc.AuthServiceImplBase` 구현체 — 각 RPC를 내부 서비스로 위임 |
+| `grpc/AuthGrpcService.java` | `AuthServiceGrpc.AuthServiceImplBase` 구현체, 각 RPC를 서비스 레이어로 위임 |
 
-### 보안 / JWT (기존 그대로)
-
-| 파일 | 역할 |
-|------|------|
-| `common/config/SecurityConfig.java` | BCryptPasswordEncoder 빈 (HTTP 필터체인 최소화) |
-| `common/security/AuthenticatedUser.java` | Spring Security `User` 래퍼 |
-| `domains/user/CustomUserDetailsService.java` | `loadUserByUsername()` |
-| `utils/JwtService.java` | JWT accessToken / refreshToken 생성·검증 |
-
-### 어드민 로그인 (기존 그대로, Controller 제거)
+### 인증 / JWT
 
 | 파일 | 역할 |
 |------|------|
-| `domains/user/service/UserAdminService.java` | `logInWithRole()` — BCrypt 검증, 역할 확인, JWT 발급 |
-| `domains/user/dto/UserAdminDto.java` | `PostLoginReq`, `PostLoginRes` |
-| `common/config/InitialDataLoader_Extended.java` | dev/local/test 환경 기본 어드민 계정 생성 |
+| `security/JwtService.java` | RS256 키 쌍으로 Access/Refresh Token 생성 및 검증 |
+| `security/RsaKeyProvider.java` | PEM 문자열 -> RSAPrivateKey / RSAPublicKey 변환 |
 
-### 카카오 OAuth2 네이티브 앱 (기존 그대로, Controller 제거)
-
-| 파일 | 역할 |
-|------|------|
-| `domains/oauth/service/NativeOAuth2Service.java` | 토큰 검증, 유저 로드/생성, JWT 발급 |
-| `domains/oauth/service/KakaoApiService.java` | 카카오 API 호출로 토큰 유효성 검증 및 유저 정보 조회 |
-| `domains/oauth/dto/NativeOAuth2LoginRequest.java` | `provider`, `accessToken`, `userInfo(선택)` |
-| `domains/oauth/dto/NativeOAuth2LoginResponse.java` | `accessToken`, `refreshToken`, `userInfo`, `isNewUser` |
-
-### OAuth2 유저 정보 파싱 (기존 그대로)
+### Google OAuth2
 
 | 파일 | 역할 |
 |------|------|
-| `domains/oauth/OAuth2UserInfo.java` | 유저 정보 추출 인터페이스 |
-| `domains/oauth/NativeKakaoOAuth2UserInfo.java` | 네이티브 앱 카카오 응답 파싱 |
-| `domains/oauth/OAuth2UserInfoFactory.java` | provider 이름으로 구현체 선택 |
-| `domains/oauth/OAuth2Provider.java` | Enum: `KAKAO` |
-| `domains/oauth/OAuth2UserPrincipal.java` | `OAuth2User` + `UserDetails` 통합 principal |
+| `oauth/GoogleTokenVerifier.java` | Google ID Token 검증 (google-auth-library 사용) |
+| `oauth/GoogleOAuth2UserInfo.java` | ID Token claims에서 유저 정보 추출 |
 
-### 카카오 API 클라이언트 — Feign (기존 그대로)
+### 사용자 도메인
 
 | 파일 | 역할 |
 |------|------|
-| `common/oauth2/KakaoUserInfoApiClient.java` | `kapi.kakao.com/v2/user/me` |
-| `common/oauth2/response/KakaoUserInfoResponse.java` | 카카오 유저 정보 응답 DTO |
-| `common/oauth2/error/KakaoFeignErrorDecoder.java` | 카카오 API 에러 처리 |
-| `common/config/KakaoFeignConfig.java` | Feign 클라이언트 설정 |
+| `domain/user/entity/User.java` | 유저 엔티티 |
+| `domain/user/entity/RefreshToken.java` | 리프레시 토큰 엔티티 (bcrypt 해시 저장) |
+| `domain/user/UserRepository.java` | 유저 조회 (provider+provider_id, username 등) |
+| `domain/user/RefreshTokenRepository.java` | 리프레시 토큰 CRUD |
 
-### 유저 엔티티 및 저장소 (기존 그대로)
-
-| 파일 | 역할 |
-|------|------|
-| `domains/user/entity/User.java` | `username`, `password`, `socialId`, `socialType`, `role`, `isOAuth` |
-| `domains/user/entity/Role.java` | Enum: `ROLE_NORMAL`, `ROLE_ADMIN`, `ROLE_OPERATE_MANAGER` |
-| `domains/user/UserRepository.java` | socialId, username, email, pin, phone 등으로 유저 조회 |
-
-### 예외 (기존 그대로)
+### 서비스 레이어
 
 | 파일 | 역할 |
 |------|------|
-| `domains/oauth/exception/InvalidAccessTokenException.java` | 유효하지 않은 accessToken |
-| `domains/oauth/exception/OAuth2ApiCallException.java` | 카카오 API 호출 실패 |
-| `domains/oauth/exception/UnsupportedProviderException.java` | 지원하지 않는 provider |
-| `domains/oauth/exception/UserInfoMismatchException.java` | 클라이언트 유저 정보 불일치 |
+| `service/GoogleLoginService.java` | ID Token 검증 -> findOrCreateUser -> 토큰 발급 |
+| `service/AdminAuthService.java` | 어드민 로그인 / 관리형 계정 생성 |
+| `service/TokenService.java` | 토큰 생성, 갱신, 폐기 |
+
+### 설정
+
+| 파일 | 역할 |
+|------|------|
+| `config/SecurityConfig.java` | BCryptPasswordEncoder 빈, HTTP 완전 차단 |
+| `config/RedisConfig.java` | RedisTemplate 설정 |
 
 ---
 
-## 5. gRPC 서비스 구현
-
-**파일**: `grpc/AuthGrpcService.java`
-
-기존 Controller 역할을 대체합니다. 내부 서비스 로직은 그대로 위임합니다.
+## 5. gRPC 서비스 구현 골격
 
 ```java
 @GrpcService
 public class AuthGrpcService extends AuthServiceGrpc.AuthServiceImplBase {
 
-    private final UserAdminService userAdminService;
-    private final NativeOAuth2Service nativeOAuth2Service;
-    private final JwtService jwtService;
-
-    // ── 어드민 로그인 ───────────────────────────────────────────
+    private final GoogleLoginService googleLoginService;
+    private final AdminAuthService adminAuthService;
+    private final TokenService tokenService;
+    private final UserRepository userRepository;
 
     @Override
-    public void adminLogin(AdminLoginRequest req, StreamObserver<LoginResponse> observer) {
+    public void googleLogin(GoogleLoginRequest req, StreamObserver<GoogleLoginResponse> obs) {
         try {
-            PostLoginRes res = userAdminService.logInWithRole(
-                new PostLoginReq(req.getUserName(), req.getPassword()),
-                Role.ROLE_ADMIN, Role.ROLE_OPERATE_MANAGER
-            );
-            observer.onNext(LoginResponse.newBuilder()
-                .setId(res.id())
-                .setUsername(res.username())
-                .setName(res.name())
-                .setAccessToken(res.accessToken())
-                .setRefreshToken(res.refreshToken())
-                .setRole(res.role())
-                .build());
-            observer.onCompleted();
-        } catch (BaseException e) {
-            observer.onError(Status.UNAUTHENTICATED
-                .withDescription(e.getStatus().getMessage())
-                .asRuntimeException());
+            GoogleLoginResult result = googleLoginService.login(req.getIdToken());
+            obs.onNext(toProto(result));
+            obs.onCompleted();
+        } catch (InvalidIdTokenException e) {
+            obs.onError(Status.UNAUTHENTICATED
+                .withDescription("Invalid Google ID Token").asRuntimeException());
         }
     }
 
-    // ── 카카오 네이티브 로그인 ──────────────────────────────────
-
     @Override
-    public void kakaoNativeLogin(KakaoNativeLoginRequest req, StreamObserver<KakaoLoginResponse> observer) {
+    public void adminLogin(AdminLoginRequest req, StreamObserver<AuthTokenResponse> obs) {
         try {
-            NativeOAuth2LoginRequest loginReq = toServiceRequest(req);
-            NativeOAuth2LoginResponse res = nativeOAuth2Service.processNativeLogin(loginReq);
-
-            observer.onNext(KakaoLoginResponse.newBuilder()
-                .setAccessToken(res.accessToken())
-                .setRefreshToken(res.refreshToken())
-                .setIsNewUser(res.isNewUser())
-                .setUserInfo(toProtoUserInfo(res.userInfo()))
-                .build());
-            observer.onCompleted();
-        } catch (InvalidAccessTokenException e) {
-            observer.onError(Status.UNAUTHENTICATED
-                .withDescription("Invalid kakao access token")
-                .asRuntimeException());
-        } catch (UnsupportedProviderException e) {
-            observer.onError(Status.INVALID_ARGUMENT
-                .withDescription("Unsupported provider: " + req.getProvider())
-                .asRuntimeException());
+            TokenPair pair = adminAuthService.login(req.getUsername(), req.getPassword());
+            obs.onNext(toProto(pair));
+            obs.onCompleted();
+        } catch (AuthException e) {
+            obs.onError(Status.UNAUTHENTICATED
+                .withDescription(e.getMessage()).asRuntimeException());
         }
     }
 
-    // ── 토큰 검증 ───────────────────────────────────────────────
+    @Override
+    public void adminCreateUser(AdminCreateUserRequest req, StreamObserver<AdminCreateUserResponse> obs) {
+        try {
+            User user = adminAuthService.createManagedUser(
+                req.getUsername(), req.getPassword(), req.getRole());
+            obs.onNext(AdminCreateUserResponse.newBuilder().setUser(toProto(user)).build());
+            obs.onCompleted();
+        } catch (DuplicateUsernameException e) {
+            obs.onError(Status.ALREADY_EXISTS
+                .withDescription("Username already exists").asRuntimeException());
+        } catch (InvalidRoleException e) {
+            obs.onError(Status.INVALID_ARGUMENT
+                .withDescription("Role must be ROLE_BAR or ROLE_REQUE").asRuntimeException());
+        }
+    }
 
     @Override
-    public void validateToken(ValidateTokenRequest req, StreamObserver<ValidateTokenResponse> observer) {
+    public void refreshToken(RefreshTokenRequest req, StreamObserver<AuthTokenResponse> obs) {
         try {
-            jwtService.validate(req.getToken());
-            String userId = jwtService.loadUsernameByToken(req.getToken());
-            UserDetails userDetails = userDetailsService.loadUserByUsername(userId);
-            String role = userDetails.getAuthorities().stream()
-                .map(GrantedAuthority::getAuthority)
-                .findFirst().orElse("");
-
-            observer.onNext(ValidateTokenResponse.newBuilder()
-                .setValid(true)
-                .setUserId(userId)
-                .setRole(role)
-                .build());
-            observer.onCompleted();
-        } catch (ExpiredJwtException e) {
-            observer.onNext(ValidateTokenResponse.newBuilder()
-                .setValid(false)
-                .setReason("TOKEN_EXPIRED")
-                .build());
-            observer.onCompleted();
-        } catch (JwtException e) {
-            observer.onNext(ValidateTokenResponse.newBuilder()
-                .setValid(false)
-                .setReason("TOKEN_INVALID")
-                .build());
-            observer.onCompleted();
+            TokenPair pair = tokenService.refresh(req.getRefreshToken());
+            obs.onNext(toProto(pair));
+            obs.onCompleted();
+        } catch (InvalidRefreshTokenException e) {
+            obs.onError(Status.UNAUTHENTICATED
+                .withDescription(e.getMessage()).asRuntimeException());
         }
+    }
+
+    @Override
+    public void validateToken(ValidateTokenRequest req, StreamObserver<ValidateTokenResponse> obs) {
+        // 예외를 던지지 않고 valid=false + reason으로 반환
+        ValidateTokenResponse response = tokenService.validate(req.getAccessToken());
+        obs.onNext(response);
+        obs.onCompleted();
+    }
+
+    @Override
+    public void logout(LogoutRequest req, StreamObserver<LogoutResponse> obs) {
+        tokenService.revokeAll(req.getUserId());
+        obs.onNext(LogoutResponse.getDefaultInstance());
+        obs.onCompleted();
+    }
+
+    @Override
+    public void getMe(GetMeRequest req, StreamObserver<UserResponse> obs) {
+        User user = userRepository.findById(req.getUserId())
+            .orElseThrow(() -> Status.NOT_FOUND.asRuntimeException());
+        obs.onNext(toProto(user));
+        obs.onCompleted();
     }
 }
 ```
 
-### SecurityConfig (HTTP 완전 비활성화)
-
-auth-service는 HTTP 요청을 받지 않으므로 Spring Security HTTP 필터체인을 전면 차단합니다.
-`JwtAuthenticationFilter`, OAuth2 설정, Form Login 등 기존 HTTP 관련 빈은 모두 제거합니다.
+### SecurityConfig (HTTP 완전 차단)
 
 ```java
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
-    // HTTP 필터체인: 모든 요청 차단 (gRPC만 사용)
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
         http
@@ -425,260 +461,238 @@ public class SecurityConfig {
 }
 ```
 
-> 제거 대상 파일 (기존 seniorvibe-server에서 가져오지 않음):
-> - `common/filter/JwtAuthenticationFilter.java`
-> - `domains/oauth/CustomOAuth2UserService.java`
-> - `domains/oauth/OAuth2AuthenticationSuccessHandler.java`
-> - `domains/oauth/OAuth2AuthenticationFailureHandler.java`
-> - `domains/oauth/OAuth2AuthorizationRequestCookieRepository.java`
-> - `domains/oauth/CustomRequestEntityConverter.java`
-> - `common/oauth2/KakaoOAuth2ApiClient.java` (authorization_code 교환 — 웹 플로우 전용)
-
 ---
 
-## 6. JWT 토큰 로직
-
-**파일**: `utils/JwtService.java` — 기존 구현 그대로 사용
-
-### JWT 구조
+## 6. Google 소셜 로그인 내부 로직
 
 ```
-Header: { alg: HS256, typ: JWT }
-
-Payload: {
-  sub:  <userId 또는 username>,   // getUsername() 반환값
-  role: [ROLE_NORMAL],
-  type: "ACCESS_TOKEN",           // 또는 "REFRESH_TOKEN"
-  jti:  <UUID>,
-  iat:  <발급 시각>,
-  nbf:  <유효 시작 시각>,
-  exp:  <만료 시각>
-}
-
-Signature: HMAC-SHA256(secret-key)
-```
-
-### 주요 메서드
-
-| 메서드 | 설명 |
-|--------|------|
-| `createAccessToken(UserDetails)` | Access Token 생성 |
-| `createRefreshToken(UserDetails)` | Refresh Token 생성 |
-| `validate(String token)` | 서명 및 만료 검증 (예외 throw) |
-| `loadUsernameByToken(String token)` | subject(username) 추출 |
-
-### `User.getUsername()` 라우팅 (기존 그대로)
-
-```
-ILS 사용자            → pin
-Spa 데모 사용자       → phoneNumber
-일반 유저 ROLE_NORMAL → socialId
-어드민/운영 매니저    → username 필드
+gRPC GoogleLogin RPC 수신 (id_token)
+  └─ GoogleLoginService.login(idToken)
+       ├─ GoogleTokenVerifier.verify(idToken)
+       │    ├─ GoogleIdTokenVerifier로 Google 공개키 기반 서명 검증
+       │    ├─ aud(client_id) 일치 확인
+       │    └─ 실패 -> InvalidIdTokenException -> UNAUTHENTICATED
+       ├─ claims에서 추출: sub(provider_id), email, name, picture
+       ├─ userRepository.findByProviderAndProviderId(GOOGLE, sub)
+       │    ├─ 존재 -> 기존 유저 로드 (isNewUser = false)
+       │    └─ 없음 -> User 신규 생성 (isNewUser = true)
+       │         ├─ role = ROLE_NORMAL
+       │         ├─ provider = PROVIDER_GOOGLE
+       │         ├─ provider_id = Google sub
+       │         ├─ email, nickname = Google 이름, profile_image_url
+       │         └─ hashed_password = null (소셜 전용 계정)
+       ├─ TokenService.generatePair(user)
+       │    ├─ createAccessToken()  -> RS256 서명, 만료 30분
+       │    └─ createRefreshToken() -> RS256 서명, 만료 7일
+       ├─ TokenService.saveRefreshToken(userId, rawRefreshToken)
+       │    ├─ BCrypt.hash(rawToken) -> PostgreSQL 저장
+       │    └─ Redis: refresh:{userId} -> 해시값 (TTL: 7일)
+       └─ GoogleLoginResponse 반환 (is_new_user 포함)
 ```
 
 ---
 
 ## 7. 어드민 로그인 내부 로직
 
-**파일**: `domains/user/service/UserAdminService.java` — 기존 구현 그대로
-
 ```
-gRPC AdminLogin RPC 수신
-  └─ AuthGrpcService.adminLogin()
-       └─ userAdminService.logInWithRole(req, ROLE_ADMIN, ROLE_OPERATE_MANAGER)
-
-UserAdminService.logInWithRole()
-  ├─ userRepository.findByUsernameAndState(userName, ACTIVE)
-  │   └─ 없으면 → NOT_FIND_USER 예외 → gRPC UNAUTHENTICATED
-  ├─ passwordEncoder.matches(password, user.getPassword())
-  │   └─ 불일치 → FAILED_TO_LOGIN 예외 → gRPC UNAUTHENTICATED
-  ├─ user.getRole()이 allowedRoles에 포함 확인
-  │   └─ 불일치 → FAILED_TO_LOGIN 예외 → gRPC UNAUTHENTICATED
-  ├─ jwtService.createAccessToken(user)
-  ├─ jwtService.createRefreshToken(user)
-  └─ PostLoginRes 반환 → LoginResponse proto 변환
-```
-
-### 어드민 계정 초기화 (`InitialDataLoader_Extended.java`)
-
-- 적용 환경: `dev`, `local`, `test`
-- 아이디: `admin`
-- 비밀번호: 환경변수 `ADMIN_INITIAL_PASSWORD` 없으면 `qwerty1234` (BCrypt 해싱)
-- 권한: `ROLE_ADMIN`
-
----
-
-## 8. 카카오 OAuth2 네이티브 앱 내부 로직
-
-**파일**: `domains/oauth/service/NativeOAuth2Service.java` — 기존 구현 그대로
-
-```
-gRPC KakaoNativeLogin RPC 수신
-  └─ AuthGrpcService.kakaoNativeLogin()
-       └─ nativeOAuth2Service.processNativeLogin(request)
-
-NativeOAuth2Service.processNativeLogin()
-  ├─ provider 유효성 확인 (현재 kakao만 지원)
-  ├─ KakaoApiService.validateAccessToken(accessToken)
-  │   └─ KakaoUserInfoApiClient로 카카오 API 호출 → 토큰 유효성 검증
-  ├─ KakaoApiService.getUserInfo(accessToken)
-  │   └─ kapi.kakao.com/v2/user/me → KakaoUserInfoResponse
-  ├─ (userInfo 제공 시) validateUserInfoConsistency()
-  │   └─ ID 일치 여부 확인
-  │   └─ createEnhancedUserInfo() - API 응답 우선, 클라이언트 정보로 보완
-  ├─ NativeKakaoOAuth2UserInfo 생성
-  ├─ loadRegisteredUser(socialId) → Optional<User>
-  │   ├─ 기존 유저: 로드
-  │   └─ 신규 유저: saveUser() → principal.toEntity()로 User 생성
-  │       ├─ password = "SOCIAL_LOGIN"
-  │       ├─ isOAuth = true
-  │       ├─ socialType = "kakao", socialId = 카카오 ID
-  │       ├─ role = ROLE_NORMAL
-  │       └─ 전화번호 정규화 (국제 → 국내 형식)
-  ├─ jwtService.createAccessToken(principal)
-  ├─ jwtService.createRefreshToken(principal)
-  └─ NativeOAuth2LoginResponse 반환 → KakaoLoginResponse proto 변환
+gRPC AdminLogin RPC 수신 (username, password)
+  └─ AdminAuthService.login(username, password)
+       ├─ userRepository.findByUsername(username)
+       │    └─ 없으면 -> UNAUTHENTICATED
+       ├─ user.getRole()이 ROLE_ADMIN / ROLE_BAR / ROLE_REQUE인지 확인
+       │    └─ ROLE_NORMAL이면 -> UNAUTHENTICATED (소셜 전용 계정)
+       ├─ passwordEncoder.matches(password, user.getHashedPassword())
+       │    └─ 불일치 -> UNAUTHENTICATED
+       ├─ TokenService.generatePair(user)
+       └─ TokenService.saveRefreshToken(userId, rawRefreshToken)
+       └─ AuthTokenResponse 반환
 ```
 
 ---
 
-## 9. 토큰 검증 흐름 (타 서비스 연동)
+## 8. 관리형 계정 생성 (ROLE_BAR / ROLE_REQUE)
 
-다른 마이크로서비스에서 JWT를 검증하는 방법은 두 가지입니다.
-
-### 방법 A: gRPC ValidateToken 호출 (권장)
+> Gateway가 JWT claims에서 role=ROLE_ADMIN을 확인한 후 이 RPC를 호출합니다.
+> 생성된 ROLE_BAR / ROLE_REQUE 계정은 이후 AdminLogin RPC로 로그인합니다.
 
 ```
-타 서비스의 gRPC Interceptor 또는 HTTP Filter
-  └─ Authorization 헤더에서 Bearer 토큰 추출
-       └─ auth-service.ValidateToken(token) gRPC 호출
-            ├─ valid=true  → ValidateTokenResponse.userId, role 사용
-            └─ valid=false → 401/UNAUTHENTICATED 반환
+gRPC AdminCreateUser RPC 수신 (username, password, role)
+  └─ AdminAuthService.createManagedUser(username, password, role)
+       ├─ role이 ROLE_BAR 또는 ROLE_REQUE인지 검증
+       │    └─ 그 외 -> InvalidRoleException -> INVALID_ARGUMENT
+       ├─ userRepository.existsByUsername(username)
+       │    └─ 중복 -> DuplicateUsernameException -> ALREADY_EXISTS
+       ├─ User 생성
+       │    ├─ username = 입력값
+       │    ├─ hashed_password = BCrypt.hash(password)
+       │    ├─ role = 입력 role (ROLE_BAR 또는 ROLE_REQUE)
+       │    └─ provider = null (소셜 계정 아님)
+       ├─ userRepository.save(user)
+       └─ AdminCreateUserResponse(UserResponse) 반환
 ```
 
-타 서비스 gRPC 클라이언트 설정 예시:
+### Role 별 계정 생성 경로 요약
+
+| Role | 생성 방식 | 로그인 방식 |
+|------|---------|-----------|
+| ROLE_NORMAL | GoogleLogin 첫 호출 시 자동 생성 | GoogleLogin RPC |
+| ROLE_ADMIN | 운영팀 직접 DB 시딩 / 초기화 스크립트 | AdminLogin RPC |
+| ROLE_BAR | ROLE_ADMIN이 AdminCreateUser 호출 | AdminLogin RPC |
+| ROLE_REQUE | ROLE_ADMIN이 AdminCreateUser 호출 | AdminLogin RPC |
+
+---
+
+## 9. JWT 토큰 로직 (RS256)
+
+### 키 관리
+
+| 키 | 보유자 | 용도 |
+|----|--------|------|
+| Private Key (PEM) | auth-service 전용 | Access/Refresh Token 서명 |
+| Public Key (PEM) | auth-service, Gateway, 타 서비스 모두 | 서명 검증 |
+
+### JWT Payload 구조
+
+```json
+{
+  "sub":   "<user_id>",
+  "email": "<email>",
+  "role":  "ROLE_NORMAL",
+  "type":  "ACCESS",
+  "jti":   "<UUID>",
+  "iat":   1234567890,
+  "exp":   1234567890
+}
+```
+
+`type` 필드로 Access / Refresh 토큰을 구분합니다. Refresh Token을 Access Token 자리에 사용하는 것을 서비스 레이어에서 차단합니다.
+
+### 주요 메서드 (JwtService.java)
+
+| 메서드 | 설명 |
+|--------|------|
+| `createAccessToken(User)` | RS256 서명, 만료 30분, type=ACCESS |
+| `createRefreshToken(User)` | RS256 서명, 만료 7일, type=REFRESH |
+| `parseClaims(token)` | 서명 검증 + claims 추출 (예외: ExpiredJwtException, JwtException) |
+| `validate(token)` | valid/reason 포함 ValidateTokenResponse 반환 |
+
+### 리프레시 토큰 저장 규칙
+
+- DB(`refresh_tokens` 테이블): `BCrypt.hash(rawToken)` 저장 (평문 절대 금지)
+- Redis `refresh:{userId}` -> 해시값 (TTL = 리프레시 만료와 동일)
+- 토큰 갱신 시: 기존 토큰 폐기 후 신규 토큰 저장 (rotation)
+
+---
+
+## 10. 토큰 갱신 흐름
+
+```
+gRPC RefreshToken RPC 수신 (refresh_token)
+  └─ TokenService.refresh(rawRefreshToken)
+       ├─ JwtService.parseClaims(rawRefreshToken)
+       │    ├─ 만료 -> UNAUTHENTICATED (reason: TOKEN_EXPIRED)
+       │    └─ 서명 오류 -> UNAUTHENTICATED (reason: TOKEN_INVALID)
+       ├─ claims.type == "REFRESH" 확인
+       │    └─ ACCESS이면 -> UNAUTHENTICATED
+       ├─ Redis에서 refresh:{userId} 해시 조회
+       │    └─ 없음 -> UNAUTHENTICATED (이미 폐기된 토큰)
+       ├─ BCrypt.matches(rawToken, storedHash) 확인
+       │    └─ 불일치 -> UNAUTHENTICATED (탈취 의심)
+       ├─ 기존 리프레시 토큰 폐기 (DB + Redis)
+       ├─ TokenService.generatePair(user)
+       └─ TokenService.saveRefreshToken() -> 신규 토큰 저장
+       └─ AuthTokenResponse 반환
+```
+
+---
+
+## 11. 토큰 검증 흐름 (Zero Trust)
+
+### Gateway 1차 검증
+
+```
+클라이언트 요청 (Authorization: Bearer <access_token>)
+  └─ Gateway JWT 필터
+       ├─ Public Key로 서명 검증
+       ├─ 만료 확인
+       ├─ 실패 -> 401 반환 (auth-service 미호출)
+       └─ 성공 -> X-User-Id, X-User-Role 헤더 주입 후 대상 서비스로 전달
+```
+
+### 각 서비스 2차 검증 (Zero Trust)
+
+```java
+// gRPC Interceptor 또는 서비스 레이어 진입 시
+ValidateTokenResponse res = authStub.validateToken(
+    ValidateTokenRequest.newBuilder().setAccessToken(token).build()
+);
+if (!res.getValid()) {
+    throw new UnauthorizedException(res.getReason());
+}
+// res.getUserId(), res.getRole() 사용
+```
+
+타 서비스 gRPC 클라이언트 설정:
 
 ```yaml
-# 타 서비스 application.yml
 grpc:
   client:
     auth-service:
       address: static://auth-service:9090
-      negotiation-type: plaintext  # TLS 미사용 시
-```
-
-```java
-@GrpcClient("auth-service")
-private AuthServiceGrpc.AuthServiceBlockingStub authStub;
-
-public void validateRequest(String token) {
-    ValidateTokenResponse res = authStub.validateToken(
-        ValidateTokenRequest.newBuilder().setToken(token).build()
-    );
-    if (!res.getValid()) {
-        throw new UnauthorizedException(res.getReason());
-    }
-}
-```
-
-### 방법 B: JWT Secret 공유 후 로컬 검증
-
-JWT secret을 Config Server 또는 환경변수로 공유하여 각 서비스가 직접 `JwtService`를 사용해 로컬 검증합니다.
-네트워크 홉이 없어 빠르지만, secret 공유 관리가 필요합니다.
-
----
-
-## 10. 유저 엔티티 및 권한
-
-**파일**: `domains/user/entity/User.java` — 기존 그대로
-
-### 인증 관련 필드
-
-| 필드 | 설명 |
-|------|------|
-| `username` | 어드민용 로그인 아이디 |
-| `password` | BCrypt 해시 (어드민) / `"SOCIAL_LOGIN"` (OAuth2) |
-| `socialId` | 카카오 ID (OAuth2 유저의 JWT subject) |
-| `socialType` | `"kakao"` |
-| `isOAuth` | OAuth2 유저 여부 |
-| `role` | `ROLE_NORMAL` / `ROLE_ADMIN` / `ROLE_OPERATE_MANAGER` |
-| `state` | `ACTIVE` / `INACTIVE` (소프트 삭제) |
-
-### Role Enum
-
-```java
-public enum Role implements GrantedAuthority {
-    ROLE_NORMAL,           // 일반 사용자 (카카오 로그인)
-    ROLE_ADMIN,            // 관리자
-    ROLE_OPERATE_MANAGER   // 운영 매니저
-}
-```
-
-### CustomUserDetailsService — username 조회 순서
-
-```
-1. socialId 또는 username 으로 조회 (findBySocialIdOrUsernameAndState)
-2. pin 으로 조회                    (ILS 사용자)
-3. phoneNumber 으로 조회           (Spa 데모 사용자)
+      negotiation-type: plaintext
 ```
 
 ---
 
-## 11. 환경 설정
+## 12. 유저 엔티티 및 권한
+
+### User 엔티티 주요 필드
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `user_id` | UUID | PK |
+| `username` | VARCHAR | 어드민/BAR/REQUE 로그인 아이디 (ROLE_NORMAL은 null) |
+| `hashed_password` | VARCHAR | BCrypt 해시 (ROLE_NORMAL은 null) |
+| `provider` | ENUM | PROVIDER_GOOGLE / null |
+| `provider_id` | VARCHAR | Google sub (소셜 유저 고유 식별자) |
+| `email` | VARCHAR | 이메일 |
+| `nickname` | VARCHAR | 닉네임 |
+| `profile_image_url` | VARCHAR | 프로필 이미지 |
+| `role` | ENUM | ROLE_NORMAL / ROLE_ADMIN / ROLE_BAR / ROLE_REQUE |
+| `created_at` | TIMESTAMP | 생성일 |
+
+### Role 별 로그인 방식 정리
+
+| Role | 로그인 RPC | 계정 생성 방식 |
+|------|-----------|--------------|
+| ROLE_NORMAL | GoogleLogin | 첫 소셜 로그인 시 자동 생성 |
+| ROLE_ADMIN | AdminLogin | 운영팀 직접 DB 시딩 |
+| ROLE_BAR | AdminLogin | ROLE_ADMIN이 AdminCreateUser로 생성 |
+| ROLE_REQUE | AdminLogin | ROLE_ADMIN이 AdminCreateUser로 생성 |
+
+---
+
+## 13. 환경 설정
 
 ### 토큰 만료 설정
 
-| 항목 | Dev | Prod |
-|------|-----|------|
-| Access Token | 21,060분 (~14일) | 12,000분 (~8일) |
-| Refresh Token | 21,060분 (~14일) | 20,160분 (~14일) |
+| 항목 | 운영 | 개발 |
+|------|------|------|
+| Access Token | 30분 | 1440분 (1일) |
+| Refresh Token | 10080분 (7일) | 10080분 (7일) |
 
 ### 주요 환경변수
 
 | 변수 | 설명 |
 |------|------|
-| `JWT_SECRET_KEY` | JWT 서명 키 (운영 환경 필수) |
-| `ADMIN_INITIAL_PASSWORD` | 초기 어드민 비밀번호 (미설정 시 `qwerty1234`) |
-| `KAKAO_CLIENT_ID` | 카카오 앱 키 |
+| `JWT_PRIVATE_KEY` | RS256 PEM 개인키 (auth-service 전용, 절대 외부 노출 금지) |
+| `JWT_PUBLIC_KEY` | RS256 PEM 공개키 (Gateway, 타 서비스에도 동일 값 배포) |
+| `GOOGLE_CLIENT_ID` | Google OAuth2 클라이언트 ID (ID Token aud 검증에 사용) |
+| `DB_HOST` / `DB_NAME` / `DB_USER` / `DB_PASSWORD` | PostgreSQL 접속 정보 |
+| `REDIS_HOST` | Redis 호스트 |
+| `ADMIN_INITIAL_USERNAME` | 초기 ROLE_ADMIN 계정 아이디 |
+| `ADMIN_INITIAL_PASSWORD` | 초기 ROLE_ADMIN 비밀번호 (BCrypt 해싱 후 저장) |
 
-> ⚠️ JWT Secret Key는 반드시 환경변수로 분리하세요. `application.yml` 하드코딩 금지.
+> JWT Private Key는 절대 application.yml에 하드코딩하지 마세요. GCP Secret Manager 또는 환경변수로만 주입하세요.
 
-> ⚠️ `UserRefreshToken` 테이블은 존재하나 저장 로직이 비활성 상태입니다. 토큰 갱신 기능 구현 시 활성화 필요.
-
----
-
-## 구글 OAuth2 추가 시 필요 작업
-
-1. `OAuth2Provider` enum에 `GOOGLE` 추가
-2. `GoogleOAuth2UserInfo implements OAuth2UserInfo` 구현
-3. `OAuth2UserInfoFactory.getOAuth2UserInfo()`에 Google 케이스 추가
-4. `NativeOAuth2Service`에 Google provider 처리 추가
-5. `application.yml`에 Google OAuth2 설정 추가
-6. `auth_service.proto`에 Google 전용 RPC 또는 `KakaoNativeLogin`을 범용 `SocialLogin`으로 리네임 고려
----
-맞아요. 그래서 보통 이렇게 나눕니다.
-
-**각 서비스 레포** — 자기 포트만 알면 됨
-```bash
-# auth-service/.env.example
-GRPC_PORT=9090
-```
-
-**infra 레포 (or api-gateway 레포)** — 전체 포트 맵을 알아야 함
-```bash
-# infra/.env.example
-AUTH_SERVICE_ADDRESS=auth-service:9090
-USER_SERVICE_ADDRESS=user-service:9091
-NOTIFICATION_SERVICE_ADDRESS=notification-service:9092
-```
-
-그리고 **포트 할당표는 infra 레포의 README나 docs에 단일 출처(Single Source of Truth)로 관리**하는 게 좋습니다. 지금 `local-dev-docker-compose-guide.md`에 있는 포트 할당표를 infra 레포로 옮기고, 각 서비스 레포에서는 "포트 할당은 infra 레포 참고"라고 링크만 걸면 됩니다.
-
-```
-infra 레포
-├── docs/port-allocation.md   ← 포트 할당표 단일 출처
-├── docker-compose.local.yml  ← 전체 스택 한번에 올리는 용도 (선택)
-└── proto/                    ← .proto 파일들
-```
-
-각 서비스는 자기 포트를 `.env.example`에 명시하고, infra 레포에 등록하는 프로세스로 굳히면 충돌 없이 관리됩니다.
+> Refresh Token은 평문을 DB에 저장하지 않습니다. BCrypt 해시만 저장합니다.
