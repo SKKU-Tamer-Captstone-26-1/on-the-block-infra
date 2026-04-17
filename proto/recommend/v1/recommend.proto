@@ -1,0 +1,96 @@
+syntax = "proto3";
+
+package ontheblock.recommend.v1;
+
+option java_package = "com.ontheblock.recommend.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/recommend/v1;recommendv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/v1/common.proto";
+
+// RecommendService provides vector-based search and personalized taste recommendations.
+// Implemented in Python (FastAPI), backed by Qdrant + PostgreSQL.
+service RecommendService {
+  // GetRecommendations returns personalized whiskey/cocktail recommendations
+  // based on the user's taste profile.
+  rpc GetRecommendations(GetRecommendationsRequest) returns (GetRecommendationsResponse);
+
+  // SearchSimilar finds items similar to a given item using vector similarity.
+  rpc SearchSimilar(SearchSimilarRequest) returns (SearchSimilarResponse);
+
+  // Search performs a semantic/keyword search over whiskeys and cocktails.
+  rpc Search(SearchRequest) returns (SearchResponse);
+
+  // UpsertTasteProfile creates or updates a user's taste profile vector.
+  rpc UpsertTasteProfile(UpsertTasteProfileRequest) returns (UpsertTasteProfileResponse);
+}
+
+// --- GetRecommendations ---
+
+message GetRecommendationsRequest {
+  string user_id = 1;
+  ItemType item_type = 2;
+  int32 limit = 3;
+}
+
+message GetRecommendationsResponse {
+  repeated RecommendedItem items = 1;
+}
+
+// --- SearchSimilar ---
+
+message SearchSimilarRequest {
+  string item_id = 1;
+  ItemType item_type = 2;
+  int32 limit = 3;
+}
+
+message SearchSimilarResponse {
+  repeated RecommendedItem items = 1;
+}
+
+// --- Search ---
+
+message SearchRequest {
+  string query = 1;
+  ItemType item_type = 2;
+  ontheblock.common.v1.PaginationRequest pagination = 3;
+}
+
+message SearchResponse {
+  repeated RecommendedItem items = 1;
+  ontheblock.common.v1.PaginationResponse pagination = 2;
+}
+
+// --- UpsertTasteProfile ---
+
+message UpsertTasteProfileRequest {
+  string user_id = 1;
+  // Taste attributes as key-value scores (0.0 ~ 1.0).
+  // e.g. {"smoky": 0.8, "sweet": 0.3, "peaty": 0.6}
+  map<string, float> taste_scores = 2;
+}
+
+message UpsertTasteProfileResponse {
+  bool success = 1;
+  google.protobuf.Timestamp updated_at = 2;
+}
+
+// --- Shared types ---
+
+message RecommendedItem {
+  string item_id = 1;
+  ItemType item_type = 2;
+  string name = 3;
+  string description = 4;
+  string image_url = 5;
+  float score = 6; // similarity or recommendation score (0.0 ~ 1.0)
+  map<string, float> taste_scores = 7;
+}
+
+enum ItemType {
+  ITEM_TYPE_UNSPECIFIED = 0;
+  ITEM_TYPE_WHISKEY = 1;
+  ITEM_TYPE_COCKTAIL = 2;
+}

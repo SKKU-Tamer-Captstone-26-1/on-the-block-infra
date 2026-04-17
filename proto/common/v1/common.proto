@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package ontheblock.common.v1;
+
+option java_package = "com.ontheblock.common.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/common/v1;commonv1";
+
+// Pagination request parameters
+message PaginationRequest {
+  int32 page = 1;
+  int32 page_size = 2;
+}
+
+// Pagination metadata in response
+message PaginationResponse {
+  int32 total_count = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  bool has_next = 4;
+}

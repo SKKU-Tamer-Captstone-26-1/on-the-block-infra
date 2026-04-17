@@ -1,0 +1,12 @@
+version: v2
+modules:
+  - path: .
+    name: buf.build/ontheblock/infra
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_DIRECTORY_NAME  # directory structure is {service}/v1/, not ontheblock/{service}/v1/
+breaking:
+  use:
+    - FILE
