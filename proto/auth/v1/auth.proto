@@ -20,6 +20,10 @@ service AuthService {
   // and returns a token pair. Called by Gateway for POST /auth/admin.
   rpc AdminLogin(AdminLoginRequest) returns (AuthTokenResponse);
 
+  // AdminCreateUser creates a managed user account (ROLE_BAR or ROLE_REQUE).
+  // Only callable by ROLE_ADMIN. Called by Gateway for POST /auth/admin/users (JWT required).
+  rpc AdminCreateUser(AdminCreateUserRequest) returns (AdminCreateUserResponse);
+
   // RefreshToken rotates the refresh token and returns a new token pair.
   // Called by Gateway for POST /auth/refresh.
   rpc RefreshToken(RefreshTokenRequest) returns (AuthTokenResponse);
@@ -57,6 +61,18 @@ message GoogleLoginResponse {
 message AdminLoginRequest {
   string username = 1;
   string password = 2;
+}
+
+// --- AdminCreateUser ---
+
+message AdminCreateUserRequest {
+  string username = 1;
+  string password = 2;
+  Role role = 3; // must be ROLE_BAR or ROLE_REQUE; ROLE_ADMIN rejected by service layer
+}
+
+message AdminCreateUserResponse {
+  UserResponse user = 1;
 }
 
 // --- RefreshToken ---
