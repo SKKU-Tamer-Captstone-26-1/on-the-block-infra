@@ -1,10 +1,10 @@
 name: Buf Push
-
 on:
   push:
     branches: [main]
     paths:
       - 'proto/**'
+  workflow_dispatch:
 
 jobs:
   push:
