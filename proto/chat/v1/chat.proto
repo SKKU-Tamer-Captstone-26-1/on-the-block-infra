@@ -4,7 +4,7 @@ package ontheblock.chat.v1;
 
 option java_package = "com.ontheblock.chat.v1";
 option java_multiple_files = true;
-option go_package = "github.com/ontheblock/chat-service/proto/chat/v1;chatv1";
+option go_package = "github.com/ontheblock/infra/proto/chat/v1;chatv1";
 
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
