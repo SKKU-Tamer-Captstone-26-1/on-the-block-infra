@@ -1,0 +1,232 @@
+syntax = "proto3";
+
+package ontheblock.community.v1;
+
+option java_package = "com.ontheblock.community.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/community/v1;communityv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/v1/common.proto";
+
+// CommunityService handles real-time chat, flash meetups, and short-form content.
+// Implemented in Go, backed by DynamoDB.
+service CommunityService {
+  // --- Chat ---
+
+  // SendMessage sends a chat message to a room.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+
+  // GetMessages returns paginated message history for a chat room.
+  rpc GetMessages(GetMessagesRequest) returns (GetMessagesResponse);
+
+  // StreamMessages opens a server-side stream for real-time messages in a room.
+  rpc StreamMessages(StreamMessagesRequest) returns (stream StreamMessagesResponse);
+
+  // --- Meetup (번개모임) ---
+
+  // CreateMeetup creates a new flash meetup post.
+  rpc CreateMeetup(CreateMeetupRequest) returns (CreateMeetupResponse);
+
+  // GetMeetup returns a single meetup by ID.
+  rpc GetMeetup(GetMeetupRequest) returns (GetMeetupResponse);
+
+  // ListMeetups returns a paginated list of meetups.
+  rpc ListMeetups(ListMeetupsRequest) returns (ListMeetupsResponse);
+
+  // JoinMeetup registers the user as a participant.
+  rpc JoinMeetup(JoinMeetupRequest) returns (JoinMeetupResponse);
+
+  // --- ShortForm (숏폼) ---
+
+  // CreateShortForm publishes a short-form video/image post.
+  rpc CreateShortForm(CreateShortFormRequest) returns (CreateShortFormResponse);
+
+  // GetShortForm returns a single short-form post by ID.
+  rpc GetShortForm(GetShortFormRequest) returns (GetShortFormResponse);
+
+  // ListShortForms returns a paginated feed of short-form posts.
+  rpc ListShortForms(ListShortFormsRequest) returns (ListShortFormsResponse);
+
+  // LikeShortForm toggles a like on a short-form post.
+  rpc LikeShortForm(LikeShortFormRequest) returns (LikeShortFormResponse);
+}
+
+// =============================================================================
+// Chat
+// =============================================================================
+
+message SendMessageRequest {
+  string room_id = 1;
+  string sender_id = 2;
+  string content = 3;
+  MessageType type = 4;
+}
+
+message SendMessageResponse {
+  ChatMessage message = 1;
+}
+
+message GetMessagesRequest {
+  string room_id = 1;
+  ontheblock.common.v1.PaginationRequest pagination = 2;
+  // Return messages older than this cursor (message_id). Empty = latest.
+  string before_message_id = 3;
+}
+
+message GetMessagesResponse {
+  repeated ChatMessage messages = 1;
+  bool has_more = 2;
+}
+
+message StreamMessagesRequest {
+  string room_id = 1;
+  string user_id = 2;
+}
+
+message StreamMessagesResponse {
+  ChatMessage message = 1;
+}
+
+message ChatMessage {
+  string message_id = 1;
+  string room_id = 2;
+  string sender_id = 3;
+  string content = 4;
+  MessageType type = 5;
+  google.protobuf.Timestamp sent_at = 6;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_TEXT = 1;
+  MESSAGE_TYPE_IMAGE = 2;
+  MESSAGE_TYPE_SYSTEM = 3;
+}
+
+// =============================================================================
+// Meetup (번개모임)
+// =============================================================================
+
+message CreateMeetupRequest {
+  string host_id = 1;
+  string title = 2;
+  string description = 3;
+  string location = 4;
+  google.protobuf.Timestamp scheduled_at = 5;
+  int32 max_participants = 6;
+}
+
+message CreateMeetupResponse {
+  Meetup meetup = 1;
+}
+
+message GetMeetupRequest {
+  string meetup_id = 1;
+}
+
+message GetMeetupResponse {
+  Meetup meetup = 1;
+}
+
+message ListMeetupsRequest {
+  ontheblock.common.v1.PaginationRequest pagination = 1;
+  MeetupStatus status_filter = 2;
+}
+
+message ListMeetupsResponse {
+  repeated Meetup meetups = 1;
+  ontheblock.common.v1.PaginationResponse pagination = 2;
+}
+
+message JoinMeetupRequest {
+  string meetup_id = 1;
+  string user_id = 2;
+}
+
+message JoinMeetupResponse {
+  bool success = 1;
+  int32 current_participants = 2;
+}
+
+message Meetup {
+  string meetup_id = 1;
+  string host_id = 2;
+  string title = 3;
+  string description = 4;
+  string location = 5;
+  google.protobuf.Timestamp scheduled_at = 6;
+  int32 max_participants = 7;
+  int32 current_participants = 8;
+  MeetupStatus status = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+enum MeetupStatus {
+  MEETUP_STATUS_UNSPECIFIED = 0;
+  MEETUP_STATUS_OPEN = 1;
+  MEETUP_STATUS_FULL = 2;
+  MEETUP_STATUS_CLOSED = 3;
+}
+
+// =============================================================================
+// ShortForm (숏폼)
+// =============================================================================
+
+message CreateShortFormRequest {
+  string author_id = 1;
+  string caption = 2;
+  string media_url = 3;
+  MediaType media_type = 4;
+  repeated string tags = 5;
+}
+
+message CreateShortFormResponse {
+  ShortForm short_form = 1;
+}
+
+message GetShortFormRequest {
+  string short_form_id = 1;
+}
+
+message GetShortFormResponse {
+  ShortForm short_form = 1;
+}
+
+message ListShortFormsRequest {
+  ontheblock.common.v1.PaginationRequest pagination = 1;
+  repeated string tags = 2;
+}
+
+message ListShortFormsResponse {
+  repeated ShortForm short_forms = 1;
+  ontheblock.common.v1.PaginationResponse pagination = 2;
+}
+
+message LikeShortFormRequest {
+  string short_form_id = 1;
+  string user_id = 2;
+}
+
+message LikeShortFormResponse {
+  bool liked = 1; // true = liked, false = unliked (toggled off)
+  int64 like_count = 2;
+}
+
+message ShortForm {
+  string short_form_id = 1;
+  string author_id = 2;
+  string caption = 3;
+  string media_url = 4;
+  MediaType media_type = 5;
+  repeated string tags = 6;
+  int64 like_count = 7;
+  int64 comment_count = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+enum MediaType {
+  MEDIA_TYPE_UNSPECIFIED = 0;
+  MEDIA_TYPE_IMAGE = 1;
+  MEDIA_TYPE_VIDEO = 2;
+}

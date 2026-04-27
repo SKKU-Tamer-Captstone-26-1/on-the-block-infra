@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package ontheblock.auth.v1;
+
+option java_package = "com.ontheblock.auth.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/auth/v1;authv1";
+
+import "google/protobuf/timestamp.proto";
+
+// AuthService exposes internal gRPC endpoints consumed by Gateway and other services.
+// REST endpoints (POST /auth/google, POST /auth/refresh, etc.) are handled by
+// Gateway which translates HTTP -> gRPC calls to this service.
+service AuthService {
+  // GoogleLogin verifies a Google ID Token, finds or creates the user,
+  // and returns a token pair. Called by Gateway for POST /auth/google.
+  rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
+
+  // RefreshToken rotates the refresh token and returns a new token pair.
+  // Called by Gateway for POST /auth/refresh.
+  rpc RefreshToken(RefreshTokenRequest) returns (AuthTokenResponse);
+
+  // GetMe returns the authenticated user's profile.
+  // Called by Gateway for GET /auth/me (JWT required).
+  rpc GetMe(GetMeRequest) returns (UserResponse);
+
+  // Logout revokes all refresh tokens for the user.
+  // Called by Gateway for POST /auth/logout (JWT required).
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // ValidateToken validates a JWT and returns the claims.
+  // Called by other services for Zero Trust secondary validation.
+  rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+}
+
+// --- GoogleLogin ---
+
+message GoogleLoginRequest {
+  string id_token = 1; // Google ID Token from client
+}
+
+message GoogleLoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
+  bool is_new_user = 6; // true if the user was created during this login
+}
+
+// --- RefreshToken ---
+
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+// --- GetMe ---
+
+message GetMeRequest {
+  string user_id = 1;
+}
+
+// --- Logout ---
+
+message LogoutRequest {
+  string user_id = 1;
+}
+
+message LogoutResponse {}
+
+// --- ValidateToken ---
+
+message ValidateTokenRequest {
+  string access_token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  string user_id = 2;
+  string email = 3;
+  Role role = 4;
+  google.protobuf.Timestamp expires_at = 5;
+  string reason = 6; // failure reason: TOKEN_EXPIRED, TOKEN_INVALID, etc.
+}
+
+// --- Shared types ---
+
+// AuthTokenResponse is used for token operations that do not involve a new social login
+// (e.g. RefreshToken). For GoogleLogin use GoogleLoginResponse which includes is_new_user.
+message AuthTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
+}
+
+message UserResponse {
+  string user_id = 1;
+  string email = 2;
+  string nickname = 3;
+  string profile_image_url = 4;
+  Role role = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_NORMAL = 1;
+  ROLE_ADMIN = 2;
+  ROLE_BAR = 3;
+  ROLE_REQUE = 4;
+}
+
+enum Provider {
+  PROVIDER_UNSPECIFIED = 0;
+  PROVIDER_GOOGLE = 1;
+}
