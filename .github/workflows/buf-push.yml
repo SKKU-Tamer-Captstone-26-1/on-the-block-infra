@@ -1,0 +1,19 @@
+name: Buf Push
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'proto/**'
+  workflow_dispatch:
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          input: proto
+          push: true
+          token: ${{ secrets.BUF_TOKEN }}
