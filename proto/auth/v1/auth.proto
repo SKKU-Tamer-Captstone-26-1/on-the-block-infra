@@ -188,6 +188,7 @@ message ValidateTokenResponse {
   Role role = 4;
   google.protobuf.Timestamp expires_at = 5;
   string reason = 6; // failure reason: TOKEN_EXPIRED, TOKEN_INVALID, etc.
+  string nickname = 7;
 }
 
 // --- Shared types ---
