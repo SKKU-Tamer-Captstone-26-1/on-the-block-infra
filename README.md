@@ -44,19 +44,14 @@ scoop install buf
 buf --version
 ```
 
+현재 BSR의 경우 public으로 레포를 열어둬서 BSR에서의 회원가입, organization 가입은 하지 않아도 아래 2단계로 넘어갈 수 있습니다.
+
 ---
 
 ### 2단계 — 서비스 레포에 buf 설정 추가
 
-각 서비스 레포 루트에 아래 두 파일을 추가합니다.
-
-#### `buf.yaml` (의존성 선언)
-
-```yaml
-version: v2
-deps:
-  - buf.build/on-the-block/api
-```
+각 서비스 레포 루트에 아래 두 파일을 참조해서 추가합니다.
+기본적으로는 담당자가 설정 파일 확인을 모든 레포에 대해서 할 예정입니다.
 
 #### `buf.gen.yaml` — Go 서비스용
 
@@ -64,15 +59,19 @@ deps:
 version: v2
 
 inputs:
-  - module: buf.build/on-the-block/api
+  - module: buf.build/on-the-block/infra
+    paths:
+      - chat/v1 #infra 레포에서 원하는 도메인 내역을 해당 paths에 추가하면 해당 path 내용만 복사됨
+      - common/v1 #common에 공통사항 (jwt, oauth2 관련 인증 등)을 추가할 예정이라 항상 추가해둘 것
 
 plugins:
-  - remote: buf.build/protocolbuffers/go
-    out: pkg/proto/gen
+  - remote: buf.build/protocolbuffers/go  
+    out: proto
     opt:
       - paths=source_relative
+
   - remote: buf.build/grpc/go
-    out: pkg/proto/gen
+    out: proto
     opt:
       - paths=source_relative
       - require_unimplemented_servers=false
@@ -84,7 +83,7 @@ plugins:
 version: v2
 
 inputs:
-  - module: buf.build/on-the-block/api
+  - module: buf.build/on-the-block/infra
 
 plugins:
   - remote: buf.build/protocolbuffers/java
@@ -120,15 +119,3 @@ GitHub Actions 자동 실행 (buf push → buf.build 업로드)
 ```
 
 ---
-
-## 최초 설정 (레포 관리자)
-
-BSR을 처음 세팅할 때 한 번만 수행합니다.
-
-1. [buf.build](https://buf.build) 가입
-2. 조직 `on-the-block` 생성
-3. 모듈 `api` 생성 → `buf.build/on-the-block/api`
-4. Settings → API Tokens에서 토큰 발급
-5. GitHub 레포 Settings → Secrets → `BUF_TOKEN` 등록
-
-이후로는 `main` 브랜치에 proto 변경이 머지되면 CI가 자동으로 BSR에 배포합니다.
