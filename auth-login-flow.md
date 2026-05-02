@@ -370,3 +370,11 @@ message LogoutResponse {}
 - [ ] 로그아웃 시 DB + Redis 동시 폐기
 - [ ] `ValidateToken` RPC - valid=false + reason 반환 (예외 미사용)
 - [ ] SecurityConfig - HTTP 완전 차단
+
+
+### proto 수정사항
+AdminLoginRequest 삭제
+AuthTokenResponse 삭제
+AdminLogin RPC 삭제
+RefreshToken 응답 타입 변경 (AuthTokenResponse → RefreshTokenResponse)
+GetMe 응답 타입 변경 (UserResponse → GetMeResponse)
