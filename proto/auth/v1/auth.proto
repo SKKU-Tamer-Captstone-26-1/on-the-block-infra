@@ -9,28 +9,44 @@ option go_package = "github.com/ontheblock/infra/proto/auth/v1;authv1";
 import "google/protobuf/timestamp.proto";
 
 // AuthService exposes internal gRPC endpoints consumed by Gateway and other services.
-// REST endpoints (POST /auth/google, POST /auth/admin, POST /auth/refresh, etc.) are handled by
-// Gateway which translates HTTP -> gRPC calls to this service.
+// REST endpoints are handled by Gateway which translates HTTP -> gRPC calls to this service.
 service AuthService {
   // GoogleLogin verifies a Google ID Token, finds or creates the user,
   // and returns a token pair. Called by Gateway for POST /auth/google.
   rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
 
-  // AdminLogin authenticates an admin user with username and password,
-  // and returns a token pair. Called by Gateway for POST /auth/admin.
-  rpc AdminLogin(AdminLoginRequest) returns (AuthTokenResponse);
+  // CredentialLogin authenticates a managed user (ROLE_ADMIN, ROLE_BAR, ROLE_REQUE)
+  // with username and password, and returns a token pair.
+  // Called by Gateway for POST /auth/login.
+  rpc CredentialLogin(CredentialLoginRequest) returns (CredentialLoginResponse);
 
   // AdminCreateUser creates a managed user account (ROLE_BAR or ROLE_REQUE).
   // Only callable by ROLE_ADMIN. Called by Gateway for POST /auth/admin/users (JWT required).
   rpc AdminCreateUser(AdminCreateUserRequest) returns (AdminCreateUserResponse);
 
+  // AdminUpdateUser updates a managed user account's password, username, or role.
+  // Only callable by ROLE_ADMIN. Called by Gateway for PATCH /auth/admin/users/{user_id} (JWT required).
+  rpc AdminUpdateUser(AdminUpdateUserRequest) returns (AdminUpdateUserResponse);
+
+  // AdminDeleteUser deactivates a managed user account.
+  // Only callable by ROLE_ADMIN. Called by Gateway for DELETE /auth/admin/users/{user_id} (JWT required).
+  rpc AdminDeleteUser(AdminDeleteUserRequest) returns (AdminDeleteUserResponse);
+
+  // AdminListUsers returns a paginated list of managed user accounts.
+  // Only callable by ROLE_ADMIN. Called by Gateway for GET /auth/admin/users (JWT required).
+  rpc AdminListUsers(AdminListUsersRequest) returns (AdminListUsersResponse);
+
+  // AdminGetUser returns a specific managed user account.
+  // Only callable by ROLE_ADMIN. Called by Gateway for GET /auth/admin/users/{user_id} (JWT required).
+  rpc AdminGetUser(AdminGetUserRequest) returns (AdminGetUserResponse);
+
   // RefreshToken rotates the refresh token and returns a new token pair.
   // Called by Gateway for POST /auth/refresh.
-  rpc RefreshToken(RefreshTokenRequest) returns (AuthTokenResponse);
+  rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 
   // GetMe returns the authenticated user's profile.
   // Called by Gateway for GET /auth/me (JWT required).
-  rpc GetMe(GetMeRequest) returns (UserResponse);
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
 
   // Logout revokes all refresh tokens for the user.
   // Called by Gateway for POST /auth/logout (JWT required).
@@ -56,11 +72,19 @@ message GoogleLoginResponse {
   bool is_new_user = 6; // true if the user was created during this login
 }
 
-// --- AdminLogin ---
+// --- CredentialLogin ---
 
-message AdminLoginRequest {
+message CredentialLoginRequest {
   string username = 1;
   string password = 2;
+}
+
+message CredentialLoginResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
 }
 
 // --- AdminCreateUser ---
@@ -75,16 +99,72 @@ message AdminCreateUserResponse {
   UserResponse user = 1;
 }
 
+// --- AdminUpdateUser ---
+
+message AdminUpdateUserRequest {
+  string user_id = 1;
+  optional string new_password = 2;
+  optional string new_username = 3;
+  optional Role new_role = 4; // only ROLE_BAR and ROLE_REQUE accepted; enforced at service layer
+}
+
+message AdminUpdateUserResponse {
+  UserResponse user = 1;
+}
+
+// --- AdminDeleteUser ---
+
+message AdminDeleteUserRequest {
+  string user_id = 1;
+}
+
+message AdminDeleteUserResponse {}
+
+// --- AdminListUsers ---
+
+message AdminListUsersRequest {
+  Role role_filter = 1; // ROLE_UNSPECIFIED returns all managed users
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message AdminListUsersResponse {
+  repeated UserResponse users = 1;
+  string next_page_token = 2;
+}
+
+// --- AdminGetUser ---
+
+message AdminGetUserRequest {
+  string user_id = 1;
+}
+
+message AdminGetUserResponse {
+  UserResponse user = 1;
+}
+
 // --- RefreshToken ---
 
 message RefreshTokenRequest {
   string refresh_token = 1;
 }
 
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  google.protobuf.Timestamp access_token_expires_at = 3;
+  google.protobuf.Timestamp refresh_token_expires_at = 4;
+  UserResponse user = 5;
+}
+
 // --- GetMe ---
 
 message GetMeRequest {
   string user_id = 1;
+}
+
+message GetMeResponse {
+  UserResponse user = 1;
 }
 
 // --- Logout ---
@@ -111,16 +191,6 @@ message ValidateTokenResponse {
 }
 
 // --- Shared types ---
-
-// AuthTokenResponse is used for token operations that do not involve a new social login
-// (e.g. RefreshToken). For GoogleLogin use GoogleLoginResponse which includes is_new_user.
-message AuthTokenResponse {
-  string access_token = 1;
-  string refresh_token = 2;
-  google.protobuf.Timestamp access_token_expires_at = 3;
-  google.protobuf.Timestamp refresh_token_expires_at = 4;
-  UserResponse user = 5;
-}
 
 message UserResponse {
   string user_id = 1;
