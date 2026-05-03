@@ -1,0 +1,292 @@
+syntax = "proto3";
+
+package ontheblock.board.v1;
+
+option java_package = "com.ontheblock.board.v1";
+option java_multiple_files = true;
+option go_package = "github.com/ontheblock/infra/proto/board/v1;boardv1";
+
+import "google/protobuf/timestamp.proto";
+import "common/v1/common.proto";
+
+// BoardService handles posts, comments, likes, and reports for the board feature.
+// Implemented in Java/Spring Boot, backed by PostgreSQL.
+// All RPCs are called by Gateway, which translates REST -> gRPC after JWT validation.
+service BoardService {
+  // --- Post ---
+  rpc CreatePost(CreatePostRequest) returns (CreatePostResponse);
+  rpc GetPost(GetPostRequest) returns (GetPostResponse);
+  rpc UpdatePost(UpdatePostRequest) returns (UpdatePostResponse);
+  rpc DeletePost(DeletePostRequest) returns (DeletePostResponse);
+  rpc ListPosts(ListPostsRequest) returns (ListPostsResponse);
+  rpc LikePost(LikePostRequest) returns (LikePostResponse);
+  // PinPost sets or unsets the notice (공지) flag. ROLE_ADMIN only.
+  rpc PinPost(PinPostRequest) returns (PinPostResponse);
+
+  // --- Comment ---
+  rpc CreateComment(CreateCommentRequest) returns (CreateCommentResponse);
+  rpc UpdateComment(UpdateCommentRequest) returns (UpdateCommentResponse);
+  rpc DeleteComment(DeleteCommentRequest) returns (DeleteCommentResponse);
+  rpc ListComments(ListCommentsRequest) returns (ListCommentsResponse);
+  rpc LikeComment(LikeCommentRequest) returns (LikeCommentResponse);
+
+  // --- Report ---
+  rpc ReportPost(ReportPostRequest) returns (ReportPostResponse);
+  rpc ReportComment(ReportCommentRequest) returns (ReportCommentResponse);
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+enum BoardType {
+  BOARD_TYPE_UNSPECIFIED = 0;
+  BOARD_TYPE_FREE = 1;         // 자유게시판
+  BOARD_TYPE_FLASH_MEETUP = 2; // 번개모임 게시판
+  BOARD_TYPE_INFO = 3;         // 정보 게시판
+}
+
+enum ReportReason {
+  REPORT_REASON_UNSPECIFIED = 0;
+  REPORT_REASON_SPAM = 1;
+  REPORT_REASON_INAPPROPRIATE = 2;
+  REPORT_REASON_MISINFORMATION = 3;
+  REPORT_REASON_OTHER = 4;
+}
+
+// =============================================================================
+// Shared Messages
+// =============================================================================
+
+// Location is used primarily for BOARD_TYPE_FLASH_MEETUP.
+// Fields are intentionally loose; to be refined as the meetup feature matures.
+message Location {
+  string name = 1;
+  double latitude = 2;
+  double longitude = 3;
+  string address = 4;
+}
+
+message PostResponse {
+  string post_id = 1;
+  BoardType board_type = 2;
+  string author_id = 3;
+  string author_nickname = 4;
+  string author_profile_image_url = 5;
+  string title = 6;
+  string content = 7;
+  repeated string image_urls = 8;
+  int32 like_count = 9;
+  int32 view_count = 10;
+  int32 comment_count = 11;
+  bool is_notice = 12;
+  bool is_liked = 13; // populated only when user_id is present in the request
+  Location location = 14; // null if not set
+  google.protobuf.Timestamp created_at = 15;
+  google.protobuf.Timestamp updated_at = 16;
+}
+
+// CommentResponse is recursive: top-level comments carry their replies inline.
+// Soft-deleted comments retain their position in the tree; content is cleared.
+message CommentResponse {
+  string comment_id = 1;
+  string post_id = 2;
+  string parent_comment_id = 3; // empty string if top-level comment
+  string author_id = 4;
+  string author_nickname = 5;
+  string author_profile_image_url = 6;
+  string content = 7; // empty string when is_deleted is true
+  int32 like_count = 8;
+  bool is_liked = 9;
+  bool is_deleted = 10;
+  repeated CommentResponse replies = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+}
+
+// =============================================================================
+// Post RPCs
+// =============================================================================
+
+// --- CreatePost ---
+
+message CreatePostRequest {
+  string user_id = 1;
+  BoardType board_type = 2;
+  string title = 3;
+  string content = 4;
+  repeated string image_urls = 5;
+  Location location = 6; // optional; primarily for BOARD_TYPE_FLASH_MEETUP
+}
+
+message CreatePostResponse {
+  PostResponse post = 1;
+}
+
+// --- GetPost ---
+
+message GetPostRequest {
+  string post_id = 1;
+  string user_id = 2; // empty if unauthenticated; used to populate is_liked
+}
+
+message GetPostResponse {
+  PostResponse post = 1;
+}
+
+// --- UpdatePost ---
+
+// Scalar fields use optional: absent = no change.
+// For repeated/message fields, use the accompanying update_* flag:
+//   update_images=true  -> replace image_urls entirely (empty list clears all)
+//   update_location=true -> replace location entirely (null location clears it)
+message UpdatePostRequest {
+  string post_id = 1;
+  string user_id = 2;
+  optional string title = 3;
+  optional string content = 4;
+  bool update_images = 5;
+  repeated string image_urls = 6;
+  bool update_location = 7;
+  Location location = 8;
+}
+
+message UpdatePostResponse {
+  PostResponse post = 1;
+}
+
+// --- DeletePost ---
+
+message DeletePostRequest {
+  string post_id = 1;
+  string user_id = 2; // must be author or ROLE_ADMIN; enforced at service layer
+}
+
+message DeletePostResponse {}
+
+// --- ListPosts ---
+
+message ListPostsRequest {
+  BoardType board_type = 1; // BOARD_TYPE_UNSPECIFIED returns posts from all boards
+  string query = 2;         // keyword search against title and content; empty to skip
+  string user_id = 3;       // empty if unauthenticated; used to populate is_liked
+  ontheblock.common.v1.PaginationRequest pagination = 4;
+}
+
+message ListPostsResponse {
+  repeated PostResponse posts = 1;
+  ontheblock.common.v1.PaginationResponse pagination = 2;
+}
+
+// --- LikePost ---
+
+message LikePostRequest {
+  string post_id = 1;
+  string user_id = 2;
+}
+
+message LikePostResponse {
+  bool liked = 1; // true = now liked, false = like removed (toggle)
+  int32 like_count = 2;
+}
+
+// --- PinPost ---
+
+message PinPostRequest {
+  string post_id = 1;
+  string user_id = 2; // must be ROLE_ADMIN; enforced at service layer
+  bool pin = 3;       // true to set notice, false to unset
+}
+
+message PinPostResponse {
+  bool is_notice = 1;
+}
+
+// =============================================================================
+// Comment RPCs
+// =============================================================================
+
+// --- CreateComment ---
+
+message CreateCommentRequest {
+  string post_id = 1;
+  string user_id = 2;
+  string parent_comment_id = 3; // empty for top-level; set for replies at any depth
+  string content = 4;
+}
+
+message CreateCommentResponse {
+  CommentResponse comment = 1;
+}
+
+// --- UpdateComment ---
+
+message UpdateCommentRequest {
+  string comment_id = 1;
+  string user_id = 2; // must be author; enforced at service layer
+  string content = 3;
+}
+
+message UpdateCommentResponse {
+  CommentResponse comment = 1;
+}
+
+// --- DeleteComment ---
+
+message DeleteCommentRequest {
+  string comment_id = 1;
+  string user_id = 2; // must be author or ROLE_ADMIN; soft delete to preserve reply tree
+}
+
+message DeleteCommentResponse {}
+
+// --- ListComments ---
+
+message ListCommentsRequest {
+  string post_id = 1;
+  string user_id = 2; // empty if unauthenticated; used to populate is_liked
+  ontheblock.common.v1.PaginationRequest pagination = 3; // applies to top-level comments only
+}
+
+message ListCommentsResponse {
+  repeated CommentResponse comments = 1; // top-level comments with nested replies populated
+  ontheblock.common.v1.PaginationResponse pagination = 2;
+}
+
+// --- LikeComment ---
+
+message LikeCommentRequest {
+  string comment_id = 1;
+  string user_id = 2;
+}
+
+message LikeCommentResponse {
+  bool liked = 1;
+  int32 like_count = 2;
+}
+
+// =============================================================================
+// Report RPCs
+// =============================================================================
+
+// --- ReportPost ---
+
+message ReportPostRequest {
+  string post_id = 1;
+  string reporter_id = 2;
+  ReportReason reason = 3;
+  string detail = 4; // optional free-text elaboration
+}
+
+message ReportPostResponse {}
+
+// --- ReportComment ---
+
+message ReportCommentRequest {
+  string comment_id = 1;
+  string reporter_id = 2;
+  ReportReason reason = 3;
+  string detail = 4;
+}
+
+message ReportCommentResponse {}
