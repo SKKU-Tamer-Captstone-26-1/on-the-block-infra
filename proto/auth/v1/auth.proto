@@ -55,6 +55,23 @@ service AuthService {
   // ValidateToken validates a JWT and returns the claims.
   // Called by other services for Zero Trust secondary validation.
   rpc ValidateToken(ValidateTokenRequest) returns (ValidateTokenResponse);
+
+  // UpdateSurveyData stores the encoded survey result (12-number string) and
+  // marks survey_completed = true. Called by Gateway after survey submission.
+  rpc UpdateSurveyData(UpdateSurveyDataRequest) returns (UpdateSurveyDataResponse);
+
+  // UpdateProfile sets the nickname and optionally the profile image URL for a user.
+  // Called after Google login onboarding. Called by Gateway for PATCH /auth/profile (JWT required).
+  rpc UpdateProfile(UpdateProfileRequest) returns (UpdateProfileResponse);
+
+  // RotateKeys generates a new RSA key pair and retires the current one.
+  // The retired public key remains active for one access-token lifetime (grace period).
+  // Only callable by ROLE_ADMIN.
+  rpc RotateKeys(RotateKeysRequest) returns (RotateKeysResponse);
+
+  // GetPublicKeys returns all currently valid public keys (current + grace-period keys).
+  // Called by Gateway and other services to refresh their key cache after rotation.
+  rpc GetPublicKeys(GetPublicKeysRequest) returns (GetPublicKeysResponse);
 }
 
 // --- GoogleLogin ---
@@ -191,6 +208,53 @@ message ValidateTokenResponse {
   string nickname = 7;
 }
 
+// --- UpdateSurveyData ---
+
+message UpdateSurveyDataRequest {
+  string user_id = 1;
+  bool survey_completed = 2;
+  int64 survey_id = 3; // survey_responses.id from survey-service
+}
+
+message UpdateSurveyDataResponse {
+  UserResponse user = 1;
+}
+
+// --- UpdateProfile ---
+
+message UpdateProfileRequest {
+  string user_id = 1;
+  string nickname = 2;
+  string profile_image_url = 3; // optional: empty string means no change
+}
+
+message UpdateProfileResponse {
+  UserResponse user = 1;
+}
+
+// --- RotateKeys ---
+
+message RotateKeysRequest {}
+
+message RotateKeysResponse {
+  string new_kid = 1;
+  string public_key_pem = 2;
+}
+
+// --- GetPublicKeys ---
+
+message GetPublicKeysRequest {}
+
+message GetPublicKeysResponse {
+  repeated PublicKeyEntry keys = 1;
+}
+
+message PublicKeyEntry {
+  string kid = 1;
+  string public_key_pem = 2;
+  bool is_current = 3;
+}
+
 // --- Shared types ---
 
 message UserResponse {
@@ -200,6 +264,11 @@ message UserResponse {
   string profile_image_url = 4;
   Role role = 5;
   google.protobuf.Timestamp created_at = 6;
+  string neighborhood = 7;
+  int32 alcohol_score = 8;
+  int32 points = 9;
+  bool survey_completed = 10;
+  int64 survey_id = 11; // survey_responses.id from survey-service, 0 if not completed
 }
 
 enum Role {
