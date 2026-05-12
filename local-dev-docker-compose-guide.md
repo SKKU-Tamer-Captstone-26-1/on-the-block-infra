@@ -11,10 +11,11 @@
 
 | 서비스 | gRPC 포트 | HTTP 포트 (필요 시) | 비고 |
 |--------|-----------|-------------------|------|
-| auth-service | 9090 | - | HTTP 없음 |
+| auth-service | 9090 | - |  |
 | user-service | 9091 | - | |
 | notification-service | 9092 | - | |
-| api-gateway | - | 8080 | 외부 진입점 |
+| board-service | 9093 | - | |
+| api-gateway | 9099 | 8080 | 외부 진입점 |
 | MySQL | - | 3306 | |
 | Redis | - | 6379 | |
 
