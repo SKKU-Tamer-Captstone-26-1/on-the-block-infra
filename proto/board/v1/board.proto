@@ -11,7 +11,14 @@ import "common/v1/common.proto";
 
 // BoardService handles posts, comments, likes, and reports for the board feature.
 // Implemented in Java/Spring Boot, backed by PostgreSQL.
-// All RPCs are called by Gateway, which translates REST -> gRPC after JWT validation.
+//
+// Auth flow (B-pattern claims propagation):
+//   Client -> gRPC -> Gateway (validates JWT, extracts user_id + roles)
+//                  -> gRPC -> BoardService (user_id injected by Gateway into request fields)
+//
+// user_id fields in request messages are populated by Gateway from validated JWT claims.
+// Clients must omit user_id; Gateway overwrites any client-supplied value.
+// Unauthenticated RPCs (ListPosts, GetPost, ListComments) accept an empty user_id.
 service BoardService {
   // --- Post ---
   rpc CreatePost(CreatePostRequest) returns (CreatePostResponse);
@@ -111,7 +118,7 @@ message CommentResponse {
 // --- CreatePost ---
 
 message CreatePostRequest {
-  string user_id = 1;
+  string user_id = 1;      // injected by Gateway; clients omit
   BoardType board_type = 2;
   string title = 3;
   string content = 4;
@@ -127,7 +134,7 @@ message CreatePostResponse {
 
 message GetPostRequest {
   string post_id = 1;
-  string user_id = 2; // empty if unauthenticated; used to populate is_liked
+  string user_id = 2; // injected by Gateway if authenticated; empty for unauthenticated calls
 }
 
 message GetPostResponse {
@@ -142,7 +149,7 @@ message GetPostResponse {
 //   update_location=true -> replace location entirely (null location clears it)
 message UpdatePostRequest {
   string post_id = 1;
-  string user_id = 2;
+  string user_id = 2; // injected by Gateway; clients omit
   optional string title = 3;
   optional string content = 4;
   bool update_images = 5;
@@ -159,7 +166,7 @@ message UpdatePostResponse {
 
 message DeletePostRequest {
   string post_id = 1;
-  string user_id = 2; // must be author or ROLE_ADMIN; enforced at service layer
+  string user_id = 2; // injected by Gateway; must be author or ROLE_ADMIN (enforced at service layer)
 }
 
 message DeletePostResponse {}
@@ -169,7 +176,7 @@ message DeletePostResponse {}
 message ListPostsRequest {
   BoardType board_type = 1; // BOARD_TYPE_UNSPECIFIED returns posts from all boards
   string query = 2;         // keyword search against title and content; empty to skip
-  string user_id = 3;       // empty if unauthenticated; used to populate is_liked
+  string user_id = 3;       // injected by Gateway if authenticated; empty for unauthenticated calls
   ontheblock.common.v1.PaginationRequest pagination = 4;
 }
 
@@ -182,7 +189,7 @@ message ListPostsResponse {
 
 message LikePostRequest {
   string post_id = 1;
-  string user_id = 2;
+  string user_id = 2; // injected by Gateway; clients omit
 }
 
 message LikePostResponse {
@@ -194,7 +201,7 @@ message LikePostResponse {
 
 message PinPostRequest {
   string post_id = 1;
-  string user_id = 2; // must be ROLE_ADMIN; enforced at service layer
+  string user_id = 2; // injected by Gateway; must be ROLE_ADMIN (Gateway enforces before forwarding)
   bool pin = 3;       // true to set notice, false to unset
 }
 
@@ -210,7 +217,7 @@ message PinPostResponse {
 
 message CreateCommentRequest {
   string post_id = 1;
-  string user_id = 2;
+  string user_id = 2;            // injected by Gateway; clients omit
   string parent_comment_id = 3; // empty for top-level; set for replies at any depth
   string content = 4;
 }
@@ -223,7 +230,7 @@ message CreateCommentResponse {
 
 message UpdateCommentRequest {
   string comment_id = 1;
-  string user_id = 2; // must be author; enforced at service layer
+  string user_id = 2; // injected by Gateway; must be author (enforced at service layer)
   string content = 3;
 }
 
@@ -235,7 +242,7 @@ message UpdateCommentResponse {
 
 message DeleteCommentRequest {
   string comment_id = 1;
-  string user_id = 2; // must be author or ROLE_ADMIN; soft delete to preserve reply tree
+  string user_id = 2; // injected by Gateway; must be author or ROLE_ADMIN (enforced at service layer)
 }
 
 message DeleteCommentResponse {}
@@ -244,7 +251,7 @@ message DeleteCommentResponse {}
 
 message ListCommentsRequest {
   string post_id = 1;
-  string user_id = 2; // empty if unauthenticated; used to populate is_liked
+  string user_id = 2; // injected by Gateway if authenticated; empty for unauthenticated calls
   ontheblock.common.v1.PaginationRequest pagination = 3; // applies to top-level comments only
 }
 
@@ -257,7 +264,7 @@ message ListCommentsResponse {
 
 message LikeCommentRequest {
   string comment_id = 1;
-  string user_id = 2;
+  string user_id = 2; // injected by Gateway; clients omit
 }
 
 message LikeCommentResponse {
@@ -273,7 +280,7 @@ message LikeCommentResponse {
 
 message ReportPostRequest {
   string post_id = 1;
-  string reporter_id = 2;
+  string reporter_id = 2; // injected by Gateway; clients omit
   ReportReason reason = 3;
   string detail = 4; // optional free-text elaboration
 }
@@ -284,7 +291,7 @@ message ReportPostResponse {}
 
 message ReportCommentRequest {
   string comment_id = 1;
-  string reporter_id = 2;
+  string reporter_id = 2; // injected by Gateway; clients omit
   ReportReason reason = 3;
   string detail = 4;
 }
