@@ -57,30 +57,7 @@ buf --version
 각 서비스 레포 루트에 아래 두 파일을 참조해서 추가합니다.
 기본적으로는 담당자가 설정 파일 확인을 모든 레포에 대해서 할 예정입니다.
 
-#### `buf.gen.yaml` — Go 서비스용 (gateway-service 기준)
-
-```yaml
-version: v2
-
-inputs:
-  - directory: proto
-
-plugins:
-  - remote: buf.build/protocolbuffers/go
-    out: gen/go
-    opt:
-      - paths=source_relative
-
-  - remote: buf.build/grpc/go
-    out: gen/go
-    opt:
-      - paths=source_relative
-      - require_unimplemented_servers=false
-```
-
-> Go 서비스는 `proto/` 디렉토리에 필요한 `.proto` 파일을 직접 복사한 뒤 `buf generate`로 코드를 생성합니다.
-
-#### `buf.gen.yaml` — Spring 서비스용 (board-service 기준)
+#### `buf.gen.yaml` — Go 서비스용
 
 ```yaml
 version: v2
@@ -88,9 +65,33 @@ version: v2
 inputs:
   - module: buf.build/on-the-block/infra
     paths:
-      - board/v1   # 해당 서비스가 사용하는 도메인만 추가
-      - common/v1  # 공통 타입 (페이지네이션 등)
-      - auth/v1    # JWT claims 검증용 (필요한 서비스만 추가)
+      - chat/v1 #infra 레포에서 원하는 도메인 내역을 해당 paths에 추가하면 해당 path 내용만 복사됨
+      - common/v1 #common에 공통사항 (jwt, oauth2 관련 인증 등)을 추가할 예정이라 항상 추가해둘 것
+
+plugins:
+  - remote: buf.build/protocolbuffers/go  
+    out: proto
+    opt:
+      - paths=source_relative
+
+  - remote: buf.build/grpc/go
+    out: proto
+    opt:
+      - paths=source_relative
+      - require_unimplemented_servers=false
+```
+
+#### `buf.gen.yaml` — Spring 서비스용
+
+```yaml
+version: v2
+
+inputs:
+  - module: buf.build/on-the-block/infra
+    paths:
+      - board/v1  #infra 레포에서 원하는 도메인 내역을 해당 paths에 추가하면 해당 path 내용만 복사됨
+      - common/v1 #common에 공통사항 (jwt, oauth2 관련 인증 등)을 추가할 예정이라 항상 추가해둘 것
+      - auth/v1   #auth gRPC 호출이 필요한 서비스만 추가
 
 plugins:
   - remote: buf.build/protocolbuffers/java
@@ -98,8 +99,6 @@ plugins:
   - remote: buf.build/grpc/java:v1.65.1
     out: build/generated-sources/proto/java
 ```
-
-> Spring 서비스는 BSR에서 직접 모듈을 참조합니다. `paths`에는 해당 서비스가 실제로 사용하는 proto 경로만 추가하세요.
 
 ---
 
